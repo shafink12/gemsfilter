@@ -1,0 +1,268 @@
+{% comment %}
+  GemsFilter - Diamond & Gemstone Search Filter
+
+  Usage:
+  1. Upload gemsfilter.iife.js and gemsfilter.css to your theme's assets folder
+  2. Copy this snippet to snippets/gems-filter.liquid
+  3. Include in your page: {% render 'gems-filter' %}
+
+  Options (pass as snippet parameters):
+  - mode: 'all', 'diamonds', or 'gemstones' (default: 'all')
+  - diamond_collection: handle of your diamond collection (default: 'diamonds')
+  - gemstone_collection: handle of your gemstone collection (default: 'gemstones')
+  - items_per_page: number of items per page (default: 12)
+  - default_view: 'grid' or 'list' (default: 'grid')
+  - show_steps: true or false (default: false)
+
+  Example: {% render 'gems-filter', mode: 'diamonds', diamond_collection: 'natural-diamonds' %}
+{% endcomment %}
+
+{% assign gf_mode = mode | default: 'all' %}
+{% assign gf_diamond_collection = diamond_collection | default: 'diamonds' %}
+{% assign gf_gemstone_collection = gemstone_collection | default: 'gemstones' %}
+{% assign gf_items_per_page = items_per_page | default: 12 %}
+{% assign gf_default_view = default_view | default: 'grid' %}
+{% assign gf_show_steps = show_steps | default: false %}
+
+<link rel="stylesheet" href="{{ 'gemsfilter.css' | asset_url }}">
+
+<div id="gems-filter-app" class="gems-filter-container"></div>
+
+<script src="{{ 'gemsfilter.iife.js' | asset_url }}"></script>
+<script>
+(function() {
+  'use strict';
+
+  // Configuration
+  var config = {
+    mode: '{{ gf_mode }}',
+    diamondCollection: '{{ gf_diamond_collection }}',
+    gemstoneCollection: '{{ gf_gemstone_collection }}',
+    itemsPerPage: {{ gf_items_per_page }},
+    defaultView: '{{ gf_default_view }}',
+    showSteps: {{ gf_show_steps }},
+    currency: '{{ cart.currency.symbol | default: "€" }}'
+  };
+
+  // Wait for DOM
+  document.addEventListener('DOMContentLoaded', function() {
+    initGemsFilter();
+  });
+
+  async function initGemsFilter() {
+    // Initialize the filter widget
+    var gemsFilter = new GemsFilter('#gems-filter-app', {
+      mode: config.mode,
+      currency: config.currency,
+      itemsPerPage: config.itemsPerPage,
+      defaultView: config.defaultView,
+      showSteps: config.showSteps,
+
+      onItemClick: function(item) {
+        // Navigate to product page
+        window.location.href = '/products/' + item.handle;
+      },
+
+      onAddToCart: function(item) {
+        addToCart(item.variantId);
+      }
+    });
+
+    // Load products from Shopify collections
+    try {
+      if (config.mode === 'all' || config.mode === 'diamonds') {
+        var diamonds = await fetchProducts(config.diamondCollection, 'diamond');
+        gemsFilter.setDiamonds(diamonds);
+      }
+
+      if (config.mode === 'all' || config.mode === 'gemstones') {
+        var gemstones = await fetchProducts(config.gemstoneCollection, 'gemstone');
+        gemsFilter.setGemstones(gemstones);
+      }
+    } catch (error) {
+      console.error('Error loading products:', error);
+    }
+  }
+
+  async function fetchProducts(collectionHandle, type) {
+    var products = [];
+    var page = 1;
+    var hasMore = true;
+
+    while (hasMore) {
+      try {
+        var response = await fetch('/collections/' + collectionHandle + '/products.json?limit=250&page=' + page);
+        var data = await response.json();
+
+        if (data.products && data.products.length > 0) {
+          products = products.concat(data.products);
+          page++;
+          hasMore = data.products.length === 250;
+        } else {
+          hasMore = false;
+        }
+      } catch (error) {
+        console.error('Error fetching page ' + page + ':', error);
+        hasMore = false;
+      }
+    }
+
+    return products.map(function(product) {
+      return transformProduct(product, type);
+    });
+  }
+
+  function transformProduct(product, type) {
+    var variant = product.variants[0];
+    var image = product.images[0] ? product.images[0].src : null;
+
+    // Base product data
+    var item = {
+      id: String(product.id),
+      handle: product.handle,
+      variantId: variant.id,
+      price: parseFloat(variant.price),
+      currency: config.currency,
+      image: image
+    };
+
+    // Extract metafields from tags (format: "metafield:key:value")
+    var tagMeta = {};
+    if (product.tags) {
+      product.tags.forEach(function(tag) {
+        if (tag.indexOf(':') > -1) {
+          var parts = tag.split(':');
+          if (parts.length >= 2) {
+            tagMeta[parts[0].toLowerCase()] = parts.slice(1).join(':');
+          }
+        }
+      });
+    }
+
+    if (type === 'diamond') {
+      item.shape = tagMeta.shape || getOptionValue(product, 'Shape') || 'round';
+      item.carat = parseFloat(tagMeta.carat || getOptionValue(product, 'Carat') || '1.0');
+      item.color = tagMeta.color || getOptionValue(product, 'Color') || 'G';
+      item.clarity = tagMeta.clarity || getOptionValue(product, 'Clarity') || 'VS1';
+      item.cut = tagMeta.cut || getOptionValue(product, 'Cut') || 'Excellent';
+      item.polish = tagMeta.polish || getOptionValue(product, 'Polish') || 'Excellent';
+      item.symmetry = tagMeta.symmetry || getOptionValue(product, 'Symmetry') || 'Excellent';
+      item.fluorescence = tagMeta.fluorescence || getOptionValue(product, 'Fluorescence') || 'None';
+      item.certification = tagMeta.certification || tagMeta.cert || getOptionValue(product, 'Certification') || 'GIA';
+      item.lwRatio = parseFloat(tagMeta.lw_ratio || tagMeta.ratio || '1.0');
+      item.reportNumber = tagMeta.report || tagMeta.report_number || '';
+    } else {
+      item.type = tagMeta.type || 'natural';
+      item.gemstoneType = tagMeta.gemstone || tagMeta.gemstone_type || getProductType(product) || 'sapphire';
+      item.shape = tagMeta.shape || getOptionValue(product, 'Shape') || 'oval';
+      item.carat = parseFloat(tagMeta.carat || getOptionValue(product, 'Carat') || '1.0');
+      item.color = tagMeta.color || getOptionValue(product, 'Color') || '';
+      item.intensity = tagMeta.intensity || getOptionValue(product, 'Intensity') || 'vivid';
+      item.clarity = tagMeta.clarity || getOptionValue(product, 'Clarity') || 'ec1';
+      item.certification = tagMeta.certification || tagMeta.cert || getOptionValue(product, 'Certification') || 'ICL';
+      item.reportNumber = tagMeta.report || tagMeta.report_number || '';
+    }
+
+    return item;
+  }
+
+  function getOptionValue(product, optionName) {
+    if (!product.options) return null;
+
+    for (var i = 0; i < product.options.length; i++) {
+      if (product.options[i].name.toLowerCase() === optionName.toLowerCase()) {
+        return product.options[i].values[0];
+      }
+    }
+    return null;
+  }
+
+  function getProductType(product) {
+    if (product.product_type) {
+      return product.product_type.toLowerCase().replace(/\s+/g, '-');
+    }
+    return null;
+  }
+
+  function addToCart(variantId) {
+    fetch('/cart/add.js', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        id: variantId,
+        quantity: 1
+      })
+    })
+    .then(function(response) {
+      if (!response.ok) {
+        throw new Error('Failed to add to cart');
+      }
+      return response.json();
+    })
+    .then(function(data) {
+      // Update cart count in header (adjust selector for your theme)
+      updateCartCount();
+
+      // Show success message
+      showNotification('Added to cart!', 'success');
+    })
+    .catch(function(error) {
+      console.error('Error:', error);
+      showNotification('Could not add to cart. Please try again.', 'error');
+    });
+  }
+
+  function updateCartCount() {
+    fetch('/cart.js')
+      .then(function(response) { return response.json(); })
+      .then(function(cart) {
+        // Update cart count - adjust selectors for your theme
+        var cartCountElements = document.querySelectorAll('.cart-count, .cart-item-count, [data-cart-count]');
+        cartCountElements.forEach(function(el) {
+          el.textContent = cart.item_count;
+        });
+
+        // Dispatch event for theme integration
+        document.dispatchEvent(new CustomEvent('cart:updated', { detail: cart }));
+      });
+  }
+
+  function showNotification(message, type) {
+    // Check if theme has a notification system
+    if (typeof window.theme !== 'undefined' && typeof window.theme.showNotification === 'function') {
+      window.theme.showNotification(message, type);
+      return;
+    }
+
+    // Simple fallback notification
+    var notification = document.createElement('div');
+    notification.className = 'gf-notification gf-notification--' + type;
+    notification.innerHTML = '<span>' + message + '</span><button onclick="this.parentElement.remove()">&times;</button>';
+    notification.style.cssText = 'position:fixed;top:20px;right:20px;padding:15px 20px;background:' +
+      (type === 'success' ? '#28a745' : '#dc3545') +
+      ';color:white;border-radius:8px;z-index:10000;display:flex;align-items:center;gap:10px;box-shadow:0 4px 12px rgba(0,0,0,0.15);';
+
+    document.body.appendChild(notification);
+
+    setTimeout(function() {
+      notification.remove();
+    }, 3000);
+  }
+})();
+</script>
+
+<style>
+  .gems-filter-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+  }
+
+  @media (max-width: 768px) {
+    .gems-filter-container {
+      padding: 10px;
+    }
+  }
+</style>
